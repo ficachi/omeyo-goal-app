@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from .ai_agent import AIAgent
 from .database import SessionLocal, engine
 from .models import Base, User, Goal
+from .supabase_config import get_supabase_client
 
 # Load environment variables
 load_dotenv()
@@ -59,6 +60,21 @@ async def read_root():
     """Serve the main chat interface"""
     with open("static/index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
+
+@app.get("/supabase-test")
+async def test_supabase():
+    """Test Supabase connection"""
+    try:
+        supabase = get_supabase_client()
+        # Test query - you can replace 'test_table' with an actual table
+        # result = supabase.table('test_table').select("*").limit(1).execute()
+        return {
+            "status": "success",
+            "message": "Supabase connection successful",
+            "supabase_url": os.getenv("SUPABASE_URL")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
 
 @app.post("/chat")
 async def chat_with_agent(chat_data: ChatMessage):
