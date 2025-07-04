@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy import Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from .database import engine
@@ -33,7 +33,7 @@ class Footprint(Base):
     action = Column(String)
     path_name = Column(String)
     path_color = Column(String)
-    due_time = Column(String)
+    due_time = Column(Date)
     is_completed = Column(Integer, default=0)  # 0 = False, 1 = True
     priority = Column(Integer)
     user = relationship("User", backref="footprints")

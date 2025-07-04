@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
 from sqlalchemy.exc import NoResultFound
+from datetime import date
 
 from .ai_agent import call_gemini_api
 from .database import SessionLocal, engine
 from .models import Base, User, Goal, Footprint
 from .auth import authenticate_user, create_user, create_access_token, verify_token
+from .utils import get_personalized_coach_prompt
 import json
 # from .supabase_config import get_supabase_client
 
@@ -71,6 +73,7 @@ class GoalCreate(BaseModel):
     status: str = "active"
 
 class FootprintCreate(BaseModel):
+    user_id: int
     action: str
     path_name: str
     path_color: str
@@ -78,9 +81,15 @@ class FootprintCreate(BaseModel):
     is_completed: bool = False
     priority: int
 
-class FootprintResponse(FootprintCreate):
+class FootprintResponse(BaseModel):
     id: int
     user_id: int
+    action: str
+    path_name: str
+    path_color: str
+    due_time: str
+    is_completed: bool
+    priority: int
 
 # Dependency to get database session
 def get_db():
@@ -112,51 +121,146 @@ async def test_supabase():
 async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, db: Session = Depends(get_db)):
     """Chat with the AI agent"""
     try:
-        # Create a simple prompt with personality
-        personality_prompts = {
-            "coach": "You are a motivational coach. Be encouraging, goal-oriented, and help users stay focused on their objectives.",
-            "mentor": "You are a wise mentor. Provide thoughtful guidance, share insights, and help users think through their challenges.",
-            "friend": "You are a supportive friend. Be warm, understanding, and provide emotional support while being encouraging.",
-            "therapist": "You are an empathetic therapist. Listen carefully, validate feelings, and provide therapeutic insights and coping strategies."
-        }
+        # Get user data if token is provided
+        user = None
+        ocean_scores = None
+        totem_profile = None
         
-        personality_instruction = personality_prompts.get(chat_data.personality, personality_prompts["coach"])
+        if token:
+            payload = verify_token(token)
+            if payload and payload.get("sub"):
+                user = db.query(User).filter(User.email == payload["sub"]).first()
+                if user:
+                    # Parse ocean_scores if available
+                    if user.ocean_scores:
+                        try:
+                            ocean_scores = json.loads(user.ocean_scores)
+                        except:
+                            ocean_scores = None
+                    # Build full totem_profile dict if possible
+                    totem_profile = {
+                        "animal": user.totem_animal,
+                        "emoji": getattr(user, 'totem_emoji', None),
+                        "title": user.totem_title,
+                        "description": getattr(user, 'totem_description', None),
+                        "motivation": getattr(user, 'totem_motivation', None)
+                    }
+                    # Remove keys with None values
+                    totem_profile = {k: v for k, v in totem_profile.items() if v is not None}
+        
+        # Use personalized coach prompt if user data is available, otherwise fall back to manual selection
+        if ocean_scores:
+            personality_instruction = get_personalized_coach_prompt(ocean_scores, totem_profile)
+            print("=== DEBUG: Using personalized prompt ===")
+        else:
+            # Fallback to manual personality selection
+            personality_prompts = {
+                "coach": "You are a motivational coach. Be encouraging, goal-oriented, and help users stay focused on their objectives. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
+                "mentor": "You are a wise mentor. Provide thoughtful guidance, share insights, and help users think through their challenges. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
+                "friend": "You are a supportive friend. Be warm, understanding, and provide emotional support while being encouraging. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
+                "therapist": "You are an empathetic therapist. Listen carefully, validate feelings, and provide therapeutic insights and coping strategies. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]"
+            }
+            personality_instruction = personality_prompts.get(chat_data.personality, personality_prompts["coach"])
+            print("=== DEBUG: Using fallback prompt ===")
+        
+        print(f"Personality instruction length: {len(personality_instruction)}")
+        print(f"Contains [FOOTPRINTS]: {personality_instruction.find('[FOOTPRINTS]') != -1}")
+        
         full_prompt = f"{personality_instruction}\n\nUser: {chat_data.message}\n\nResponse:"
         
+        print("=" * 50)
+        print("🔍 DEBUG: CHAT REQUEST")
+        print("=" * 50)
+        print(f"📝 Message: {chat_data.message}")
+        print(f"🎭 Received personality: '{chat_data.personality}'")
+        print(f"👤 User authenticated: {user is not None}")
+        print(f"🧠 User has ocean scores: {ocean_scores is not None}")
+        if user:
+            print(f"🐾 User totem: {user.totem_title}")
+            print(f"🐾 User totem animal: {user.totem_animal}")
+        print(f"📋 Using personalized prompt: {ocean_scores is not None}")
+        print("=" * 50)
+        print("🤖 FULL PROMPT SENT TO AI:")
+        print("-" * 30)
+        print(full_prompt)
+        print("-" * 30)
+        print("=" * 50)
+        
         response = await call_gemini_api(full_prompt)
+        
+        print("=== DEBUG: AI RESPONSE ===")
+        print(f"AI Response: {response}")
+        print("=== END DEBUG ===")
 
-        # --- Footprint extraction logic (placeholder) ---
+        # Extract footprints from AI response
         footprints = []
-        if ("drink more water" in chat_data.message.lower() or "drink water" in chat_data.message.lower()) and ("yes" in chat_data.message.lower() or "sure" in chat_data.message.lower()):
-            # If token is provided, get user_id
-            user_id = None
-            if token:
+        import re
+        footprints_match = re.search(r'\[FOOTPRINTS\](.*?)\[/FOOTPRINTS\]', response, re.DOTALL)
+        
+        if footprints_match and token:
+            try:
+                footprints_data = json.loads(footprints_match.group(1))
+                print(f"Extracted footprints from AI response: {footprints_data}")
+                
+                # Get user_id from token
                 payload = verify_token(token)
                 if payload and payload.get("sub"):
                     user = db.query(User).filter(User.email == payload["sub"]).first()
                     if user:
                         user_id = user.id
-            fp_obj = {
-                "action": "Drink a glass of water (8oz)",
-                "path_name": "Personal Journey",
-                "path_color": "bg-blue-100 text-blue-800",
-                "due_time": "Now",
-                "is_completed": False,
-                "priority": 1
-            }
-            if user_id:
-                db_footprint = Footprint(
-                    user_id=user_id,
-                    **fp_obj
-                )
-                db.add(db_footprint)
-                db.commit()
-                db.refresh(db_footprint)
-                fp_obj = {**fp_obj, "id": db_footprint.id, "user_id": user_id}
-            else:
-                fp_obj = {**fp_obj, "id": 1, "user_id": 0}
-            footprints.append(fp_obj)
-        # --- End placeholder ---
+                        
+                        # Convert due_time strings to proper date format
+                        from datetime import datetime, timedelta
+                        
+                        for fp_data in footprints_data:
+                            try:
+                                # Parse due_time
+                                due_time_str = fp_data.get('due_time', 'Today')
+                                if due_time_str.lower() == 'today':
+                                    due_date = datetime.now().date()
+                                elif due_time_str.lower() == 'tomorrow':
+                                    due_date = (datetime.now() + timedelta(days=1)).date()
+                                elif due_time_str.lower() == 'tonight':
+                                    due_date = datetime.now().date()
+                                else:
+                                    # Try to parse as date
+                                    due_date = datetime.strptime(due_time_str, "%Y-%m-%d").date()
+                                
+                                # Create footprint in database
+                                db_footprint = Footprint(
+                                    user_id=user_id,
+                                    action=fp_data.get('action', ''),
+                                    path_name='Personal Journey',
+                                    path_color='bg-blue-100 text-blue-800',
+                                    due_time=due_date,
+                                    is_completed=0,
+                                    priority=1
+                                )
+                                db.add(db_footprint)
+                                db.commit()
+                                db.refresh(db_footprint)
+                                
+                                # Add to response
+                                footprints.append({
+                                    "id": db_footprint.id,
+                                    "user_id": user_id,
+                                    "action": fp_data.get('action', ''),
+                                    "path_name": 'Personal Journey',
+                                    "path_color": 'bg-blue-100 text-blue-800',
+                                    "due_time": due_date.strftime("%Y-%m-%d"),
+                                    "is_completed": False,
+                                    "priority": 1
+                                })
+                                
+                            except Exception as e:
+                                print(f"Error creating footprint: {e}")
+                                continue
+                                
+            except json.JSONDecodeError as e:
+                print(f"Error parsing footprints JSON: {e}")
+                print(f"Raw footprints text: {footprints_match.group(1)}")
+            except Exception as e:
+                print(f"Error processing footprints: {e}")
 
         return {
             "response": response,
@@ -186,10 +290,26 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         # Create access token
         access_token = create_access_token(data={"sub": db_user.email})
         
+        # Fetch the full user object (with all fields)
+        user_obj = db.query(User).filter(User.email == db_user.email).first()
+        ocean_scores = None
+        if user_obj.ocean_scores:
+            try:
+                ocean_scores = json.loads(user_obj.ocean_scores)
+            except:
+                pass
+        
         return {
-            "id": db_user.id,
-            "name": db_user.name,
-            "email": db_user.email,
+            "id": user_obj.id,
+            "name": user_obj.name,
+            "email": user_obj.email,
+            "personality": user_obj.personality,
+            "totem_animal": user_obj.totem_animal,
+            "totem_emoji": user_obj.totem_emoji,
+            "totem_title": user_obj.totem_title,
+            "totem_description": getattr(user_obj, "totem_description", None),
+            "totem_motivation": getattr(user_obj, "totem_motivation", None),
+            "ocean_scores": ocean_scores,
             "access_token": access_token,
             "token_type": "bearer"
         }
@@ -315,24 +435,59 @@ def get_user_goals(user_id: int, db: Session = Depends(get_db)):
     ]
 
 @app.post("/footprints/", response_model=FootprintResponse)
-def create_footprint(footprint: FootprintCreate, user_id: int, db: Session = Depends(get_db)):
+def create_footprint(footprint: FootprintCreate, db: Session = Depends(get_db)):
+    print(f"Received footprint data: {footprint}")
+    print(f"Footprint type: {type(footprint)}")
+    print(f"Footprint dict: {footprint.dict()}")
+    
+    # Convert string date to date object for database
+    from datetime import datetime
+    try:
+        due_date = datetime.strptime(footprint.due_time, "%Y-%m-%d").date()
+    except ValueError:
+        # If parsing fails, use today's date as fallback
+        due_date = datetime.now().date()
+    
     db_footprint = Footprint(
-        user_id=user_id,
+        user_id=footprint.user_id,
         action=footprint.action,
         path_name=footprint.path_name,
         path_color=footprint.path_color,
-        due_time=footprint.due_time,
+        due_time=due_date,
         is_completed=1 if footprint.is_completed else 0,
         priority=footprint.priority
     )
     db.add(db_footprint)
     db.commit()
     db.refresh(db_footprint)
-    return db_footprint
+    
+    # Convert database model to response format
+    return FootprintResponse(
+        id=db_footprint.id,
+        user_id=db_footprint.user_id,
+        action=db_footprint.action,
+        path_name=db_footprint.path_name,
+        path_color=db_footprint.path_color,
+        due_time=db_footprint.due_time.strftime("%Y-%m-%d"),
+        is_completed=bool(db_footprint.is_completed),
+        priority=db_footprint.priority
+    )
 
 @app.get("/footprints/{user_id}", response_model=List[FootprintResponse])
 def get_footprints(user_id: int, db: Session = Depends(get_db)):
-    return db.query(Footprint).filter(Footprint.user_id == user_id).all()
+    footprints = db.query(Footprint).filter(Footprint.user_id == user_id).all()
+    return [
+        FootprintResponse(
+            id=fp.id,
+            user_id=fp.user_id,
+            action=fp.action,
+            path_name=fp.path_name,
+            path_color=fp.path_color,
+            due_time=fp.due_time.strftime("%Y-%m-%d"),
+            is_completed=bool(fp.is_completed),
+            priority=fp.priority
+        ) for fp in footprints
+    ]
 
 @app.patch("/footprints/{footprint_id}/complete", response_model=FootprintResponse)
 def complete_footprint(footprint_id: int = Path(...), db: Session = Depends(get_db)):
@@ -342,7 +497,17 @@ def complete_footprint(footprint_id: int = Path(...), db: Session = Depends(get_
     footprint.is_completed = 1
     db.commit()
     db.refresh(footprint)
-    return footprint
+    
+    return FootprintResponse(
+        id=footprint.id,
+        user_id=footprint.user_id,
+        action=footprint.action,
+        path_name=footprint.path_name,
+        path_color=footprint.path_color,
+        due_time=footprint.due_time.strftime("%Y-%m-%d"),
+        is_completed=bool(footprint.is_completed),
+        priority=footprint.priority
+    )
 
 @app.delete("/footprints/{footprint_id}", response_model=dict)
 def delete_footprint(footprint_id: int = Path(...), db: Session = Depends(get_db)):
