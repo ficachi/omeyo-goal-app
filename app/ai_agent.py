@@ -12,7 +12,7 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 # Initialize the generative model globally or ensure it's initialized before use.
 # It's good practice to initialize this once if the model doesn't change.
 try:
-    model = genai.GenerativeModel("gemini-1.5-flash-latest") # Using gemini-1.5-flash as per original, updated to latest
+    model = genai.GenerativeModel("gemini-2.5-flash-lite-preview-06-17") # Using gemini-1.5-flash as per original, updated to latest
 except Exception as e:
     print(f"Error initializing GenerativeModel: {e}")
     # Potentially raise the error or handle it as per application requirements
