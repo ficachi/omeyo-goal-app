@@ -51,10 +51,15 @@ def test_personality_matching():
         print(f"   → Matched Coach Type: {personality_type}")
         
         # Test personalized prompt
+        totem_profile_data = {
+            "animal": "Dolphin",
+            "title": "The Explorer",
+            "description": "A curious and insightful being.", # Example description
+            "motivation": "Discovery and learning." # Example motivation
+        }
         prompt = get_personalized_coach_prompt(
             test_case['scores'], 
-            totem_animal="Dolphin", 
-            totem_title="The Explorer"
+            totem_profile=totem_profile_data
         )
         print(f"   → Prompt Length: {len(prompt)} characters")
         print(f"   → Prompt Preview: {prompt[:100]}...")

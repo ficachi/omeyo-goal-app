@@ -6,4 +6,5 @@ openai
 python-dotenv
 google-generativeai
 supabase
-PyJWT 
+PyJWT
+google-cloud-vision

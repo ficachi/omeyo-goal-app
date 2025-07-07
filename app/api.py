@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from sqlalchemy.exc import NoResultFound
 from datetime import date
 
-from .ai_agent import call_gemini_api
+from .ai_agent import call_gemini_api, generate_image_with_imagen
 from .database import SessionLocal, engine
 from .models import Base, User, Goal, Footprint
 from .auth import authenticate_user, create_user, create_access_token, verify_token
@@ -42,6 +42,9 @@ app.add_middleware(
 class ChatMessage(BaseModel):
     message: str
     personality: str = "coach"
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
 
 class UserCreate(BaseModel):
     name: str
@@ -522,6 +525,39 @@ def delete_footprint(footprint_id: int = Path(...), db: Session = Depends(get_db
 def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "message": "Omeyo AI Agent is running!"}
+
+@app.post("/generate-image")
+async def generate_image_endpoint(request_data: ImageGenerationRequest, token: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Generates an image based on the provided prompt using Imagen.
+    """
+    try:
+        # Optional: Verify token if image generation should be restricted to authenticated users
+        if token:
+            payload = verify_token(token)
+            if not payload or not payload.get("sub"):
+                raise HTTPException(status_code=401, detail="Invalid or expired token")
+            # You can fetch user details here if needed, similar to the /chat endpoint
+            # user = db.query(User).filter(User.email == payload["sub"]).first()
+            # if not user:
+            #     raise HTTPException(status_code=404, detail="User not found")
+
+        image_output = await generate_image_with_imagen(request_data.prompt)
+
+        if image_output.startswith("Error:"):
+            raise HTTPException(status_code=500, detail=image_output)
+
+        # If image_output is a URL:
+        return {"image_url": image_output}
+        # If image_output is base64 data:
+        # return {"image_data": image_output, "format": "base64_png"} # Or appropriate format
+
+    except HTTPException as http_exc:
+        # Re-raise HTTPException to ensure FastAPI handles it correctly
+        raise http_exc
+    except Exception as e:
+        print(f"Error in generate-image endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
