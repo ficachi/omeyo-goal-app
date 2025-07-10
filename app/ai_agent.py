@@ -63,82 +63,76 @@ async def call_gemini_api(full_prompt: str) -> str:
 
 async def generate_image_with_imagen(prompt: str) -> str:
     """
-    Generates an image using Imagen (via Vertex AI) based on the provided prompt.
-    Specifies no text on the image and a forward-looking view.
+    Generates an image using Imagen REST API based on the provided prompt.
     Returns the URL of the generated image or an error message.
     """
     try:
-        # This import is here as it's specific to this function.
-        # Ensure you have GOOGLE_APPLICATION_CREDENTIALS set in your environment
-        # or are authenticated in another way for Google Cloud.
-        from google.cloud import aiplatform
-        from google.protobuf import json_format
-        from google.protobuf.struct_pb2 import Value
-        PROJECT_ID = "596007567974" # Make sure this is your actual project ID
-
-        # Initialize Vertex AI
-        aiplatform.init(project=PROJECT_ID, location="us-central1")
-
-        # Configure the Imagen model
-        # Model name might vary, check documentation for the latest one for text-to-image
-        model_name = "imagegeneration@005" # Example model, verify correct one
-        endpoint = aiplatform.Endpoint(model_name)
-
-        # Parameters for the image generation
-        # Refer to Vertex AI Imagen documentation for all available parameters
-        # https://cloud.google.com/vertex-ai/docs/generative-ai/image/generate-images
-        parameters = {
-            "prompt": f"{prompt}, no text, photorealistic, forward-looking view",
-            "sampleCount": 1, # Number of images to generate
-            # Add other parameters as needed, e.g., aspectRatio, negativePrompt
-            # For "no text", it's usually part of the prompt or a specific parameter if available.
-            # If there's a specific parameter to exclude text, it should be used.
-            # Otherwise, including "no text" in the prompt is a common approach.
+        # Check if Google Cloud credentials are available
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            print("Google Cloud credentials not found. Using placeholder image for development.")
+            return "https://via.placeholder.com/512x512/4F46E5/FFFFFF?text=Dream+Visualization"
+        
+        import requests
+        import json
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        
+        # Get project ID
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID", "gen-lang-client-0204395031")
+        
+        # Load service account credentials and get access token
+        try:
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+            credentials.refresh(Request())
+            access_token = credentials.token
+        except Exception as e:
+            print(f"Error getting access token: {e}")
+            return "https://via.placeholder.com/512x512/4F46E5/FFFFFF?text=Dream+Visualization"
+        
+        # Prepare the request
+        url = f"https://us-central1-aiplatform.googleapis.com/v1/projects/{project_id}/locations/us-central1/publishers/google/models/imagen-4.0-generate-preview-06-06:predict"
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json; charset=utf-8"
         }
-
-        instances = [{"prompt": parameters["prompt"], "sample_count": parameters["sampleCount"]}] # Adjust based on actual API
-
-        # The predict method and its parameters might vary based on the SDK version and model
-        # This is a general representation.
-        response = endpoint.predict(instances=instances)
-
-        # Process the response to get the image URL or data
-        # The response structure depends on the Imagen API version.
-        # This is a placeholder for actual response parsing.
-        # Assuming the response contains a list of predictions, and each prediction has image data (e.g., bytes or URL)
-        if response.predictions:
-            # This part needs to be adapted based on the actual structure of 'response.predictions'
-            # For example, if it returns GCS URIs:
-            # image_uri = response.predictions[0]['bytesGcsUri']
-            # Or if it returns direct image bytes (less common for large images via API, might be base64 encoded)
-            # image_bytes_b64 = response.predictions[0]['imageBytes']
-            # For now, let's assume it's a direct URL or we need to construct one.
-            # This is highly dependent on the specific Imagen model version and Vertex AI SDK.
-
-            # Placeholder: Replace with actual logic to extract image URL or data
-            # This is a common way to get results, but you'll need to check the exact response fields.
-            generated_images = response.predictions[0] # Accessing the first prediction object/dict
-
-            # Let's assume `generated_images` is a dict and might contain a URL or GCS path
-            if 'url' in generated_images:
-                return generated_images['url']
-            elif 'gcsUri' in generated_images:
-                # If it's a GCS URI, you might need to make it publicly accessible or handle it differently
-                return generated_images['gcsUri']
-            elif 'bytesBase64Encoded' in generated_images:
-                # Handle base64 encoded image data if needed
-                return f"data:image/png;base64,{generated_images['bytesBase64Encoded']}"
+        
+        data = {
+            "instances": [
+                {
+                    "prompt": f"{prompt}, photorealistic, no text, forward-looking view"
+                }
+            ],
+            "parameters": {
+                "sampleCount": 1
+            }
+        }
+        
+        # Make the request
+        print(f"🖼️ Generating image with prompt: {prompt}")
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if "predictions" in result and len(result["predictions"]) > 0:
+                # Get the base64 encoded image
+                image_data = result["predictions"][0]["bytesBase64Encoded"]
+                return f"data:image/png;base64,{image_data}"
             else:
-                print(f"Unexpected response structure: {generated_images}")
-                return "Error: Could not extract image from AI response."
+                print("No predictions in response")
+                return "Error: No images were generated."
         else:
-            print(f"Error: Imagen response does not contain predictions. Full response: {response}")
-            return "Error: AI service did not return an image."
-
-    except ImportError:
-        print("Error: google-cloud-aiplatform or its dependencies are not installed.")
+            print(f"Error: {response.status_code} - {response.text}")
+            return f"Error: {response.status_code} - {response.text}"
+            
+    except ImportError as e:
+        print(f"Error: Required libraries not installed: {e}")
         return "Error: Image generation library not installed."
     except Exception as e:
         print(f"Error generating image with Imagen: {e}")
-        # Consider logging the full exception for debugging
-        return f"Error generating image: {str(e)}"
+        # Fallback to placeholder image
+        return "https://via.placeholder.com/512x512/4F46E5/FFFFFF?text=Dream+Visualization"

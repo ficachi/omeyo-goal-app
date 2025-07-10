@@ -537,23 +537,16 @@ async def generate_image_endpoint(request_data: ImageGenerationRequest, token: O
             payload = verify_token(token)
             if not payload or not payload.get("sub"):
                 raise HTTPException(status_code=401, detail="Invalid or expired token")
-            # You can fetch user details here if needed, similar to the /chat endpoint
-            # user = db.query(User).filter(User.email == payload["sub"]).first()
-            # if not user:
-            #     raise HTTPException(status_code=404, detail="User not found")
 
         image_output = await generate_image_with_imagen(request_data.prompt)
 
         if image_output.startswith("Error:"):
             raise HTTPException(status_code=500, detail=image_output)
 
-        # If image_output is a URL:
-        return {"image_url": image_output}
-        # If image_output is base64 data:
-        # return {"image_data": image_output, "format": "base64_png"} # Or appropriate format
+        # Always return as {"image": ...} for frontend compatibility
+        return {"image": image_output}
 
     except HTTPException as http_exc:
-        # Re-raise HTTPException to ensure FastAPI handles it correctly
         raise http_exc
     except Exception as e:
         print(f"Error in generate-image endpoint: {str(e)}")

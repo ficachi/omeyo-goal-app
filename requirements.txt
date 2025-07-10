@@ -5,6 +5,7 @@ psycopg2-binary
 openai
 python-dotenv
 google-generativeai
+google-cloud-aiplatform
 supabase
 PyJWT
 google-cloud-vision
