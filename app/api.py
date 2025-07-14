@@ -21,8 +21,13 @@ import json
 # Load environment variables
 load_dotenv()
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Create database tables (with error handling)
+try:
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created successfully")
+except Exception as e:
+    print(f"⚠️  Warning: Could not create database tables: {e}")
+    print("   The app will continue but some features may not work properly")
 
 app = FastAPI(title="Omeyo AI Agent", version="1.0.0")
 
