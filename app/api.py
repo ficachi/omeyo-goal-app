@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 from sqlalchemy.exc import NoResultFound
 from datetime import date
 
-from .ai_agent import call_gemini_api
+from .ai_agent import call_gemini_api, generate_image_with_imagen
 from .database import SessionLocal, engine
-from .models import Base, User, Goal, Footprint
+from .models import Base, User, Goal, Footprint, Path as PathModel
 from .auth import authenticate_user, create_user, create_access_token, verify_token
 from .utils import get_personalized_coach_prompt
 import json
@@ -47,6 +47,9 @@ app.add_middleware(
 class ChatMessage(BaseModel):
     message: str
     personality: str = "coach"
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
 
 class UserCreate(BaseModel):
     name: str
@@ -95,6 +98,23 @@ class FootprintResponse(BaseModel):
     due_time: str
     is_completed: bool
     priority: int
+
+class PathCreate(BaseModel):
+    user_id: int
+    name: str
+    color: str = "bg-purple-100 text-purple-800"
+    is_active: bool = True
+    footprints: Optional[List[FootprintCreate]] = None
+
+class PathResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    color: str
+    is_active: bool
+    is_completed: bool
+    created_at: str
+    footprints: List[FootprintResponse] = []
 
 # Dependency to get database session
 def get_db():
@@ -523,10 +543,262 @@ def delete_footprint(footprint_id: int = Path(...), db: Session = Depends(get_db
     db.commit()
     return {"detail": "Footprint deleted"}
 
+class DreamFootprintRequest(BaseModel):
+    dream: str
+    user_id: int
+
+@app.post("/generate-footprints-from-dream")
+async def generate_footprints_from_dream(request: DreamFootprintRequest, db: Session = Depends(get_db)):
+    """
+    Generate actionable footprints from a user's dream/goal using AI
+    """
+    try:
+        # Create a personalized prompt for footprint generation
+        dream_prompt = f"""
+You are a motivational coach helping someone achieve their dream. The user has shared their dream: "{request.dream}"
+
+Based on this dream, create 5-8 actionable, specific steps that will help them achieve their goal. Each step should be:
+- Specific and actionable
+- Realistic and achievable
+- Time-bound with clear deadlines
+- Progressive (building towards the final goal)
+
+Output the steps as a JSON array wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:
+[FOOTPRINTS]
+[
+  {{"action": "Research the best online courses for web development", "due_time": "Today"}},
+  {{"action": "Enroll in a beginner-friendly coding bootcamp", "due_time": "Tomorrow"}},
+  {{"action": "Practice coding for 1 hour daily", "due_time": "This week"}},
+  {{"action": "Build your first simple website", "due_time": "Next week"}},
+  {{"action": "Create a portfolio of 3 projects", "due_time": "Next month"}}
+]
+[/FOOTPRINTS]
+
+Make sure the steps are tailored to their specific dream and will create a clear path to success.
+"""
+
+        # Call the AI to generate footprints
+        response = await call_gemini_api(dream_prompt)
+        
+        # Extract footprints from AI response
+        footprints = []
+        import re
+        footprints_match = re.search(r'\[FOOTPRINTS\](.*?)\[/FOOTPRINTS\]', response, re.DOTALL)
+        
+        if footprints_match:
+            try:
+                footprints_data = json.loads(footprints_match.group(1))
+                print(f"Generated footprints from dream: {footprints_data}")
+                
+                # First, create a Path record for this dream
+                from .models import Path as PathModel
+                from datetime import datetime
+                
+                db_path = PathModel(
+                    user_id=request.user_id,
+                    name=request.dream,
+                    color="bg-purple-100 text-purple-800",
+                    is_active=True,
+                    is_completed=False,
+                    created_at=datetime.utcnow()
+                )
+                db.add(db_path)
+                db.commit()
+                db.refresh(db_path)
+                
+                # Convert due_time strings to proper date format
+                from datetime import timedelta
+                
+                for i, fp_data in enumerate(footprints_data):
+                    try:
+                        # Parse due_time
+                        due_time_str = fp_data.get('due_time', 'Today')
+                        if due_time_str.lower() == 'today':
+                            due_date = datetime.now().date()
+                        elif due_time_str.lower() == 'tomorrow':
+                            due_date = (datetime.now() + timedelta(days=1)).date()
+                        elif due_time_str.lower() == 'tonight':
+                            due_date = datetime.now().date()
+                        elif 'week' in due_time_str.lower():
+                            if 'next week' in due_time_str.lower():
+                                due_date = (datetime.now() + timedelta(days=7)).date()
+                            else:
+                                due_date = (datetime.now() + timedelta(days=7)).date()
+                        elif 'month' in due_time_str.lower():
+                            if 'next month' in due_time_str.lower():
+                                due_date = (datetime.now() + timedelta(days=30)).date()
+                            else:
+                                due_date = (datetime.now() + timedelta(days=30)).date()
+                        else:
+                            # Try to parse as date
+                            try:
+                                due_date = datetime.strptime(due_time_str, "%Y-%m-%d").date()
+                            except:
+                                due_date = datetime.now().date()
+                        
+                        # Create footprint in database with path_id
+                        db_footprint = Footprint(
+                            user_id=request.user_id,
+                            path_id=db_path.id,  # Link to the created path
+                            action=fp_data.get('action', ''),
+                            path_name=request.dream,  # Use the actual dream name
+                            path_color="bg-purple-100 text-purple-800",
+                            due_time=due_date,
+                            is_completed=0,
+                            priority=i + 1
+                        )
+                        db.add(db_footprint)
+                        db.commit()
+                        db.refresh(db_footprint)
+                        
+                        # Add to response
+                        footprints.append({
+                            "id": db_footprint.id,
+                            "user_id": request.user_id,
+                            "action": fp_data.get('action', ''),
+                            "path_name": request.dream,
+                            "path_color": "bg-purple-100 text-purple-800",
+                            "due_time": due_date.strftime("%Y-%m-%d"),
+                            "is_completed": False,
+                            "priority": i + 1
+                        })
+                        
+                    except Exception as e:
+                        print(f"Error creating footprint: {e}")
+                        continue
+                        
+            except json.JSONDecodeError as e:
+                print(f"Error parsing footprints JSON: {e}")
+                print(f"Raw footprints text: {footprints_match.group(1)}")
+            except Exception as e:
+                print(f"Error processing footprints: {e}")
+
+        return {
+            "message": "Footprints generated successfully from your dream!",
+            "footprints": footprints,
+            "total_generated": len(footprints),
+            "path_id": db_path.id if 'db_path' in locals() else None
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating footprints: {str(e)}")
+
+@app.post("/paths/", response_model=PathResponse)
+def create_path(path: PathCreate, db: Session = Depends(get_db)):
+    """Create a new path and (optionally) its footprints."""
+    from .models import Path as PathModel, Footprint as FootprintModel
+    from datetime import datetime
+    db_path = PathModel(
+        user_id=path.user_id,
+        name=path.name,
+        color=path.color,
+        is_active=path.is_active,
+        is_completed=False,
+        created_at=datetime.utcnow()
+    )
+    db.add(db_path)
+    db.commit()
+    db.refresh(db_path)
+
+    footprints = []
+    if path.footprints:
+        for i, fp in enumerate(path.footprints):
+            due_date = None
+            try:
+                due_date = datetime.strptime(fp.due_time, "%Y-%m-%d").date()
+            except Exception:
+                due_date = datetime.utcnow().date()
+            db_fp = FootprintModel(
+                user_id=path.user_id,
+                path_id=db_path.id,
+                action=fp.action,
+                path_name=path.name,
+                path_color=path.color,
+                due_time=due_date,
+                is_completed=1 if fp.is_completed else 0,
+                priority=fp.priority
+            )
+            db.add(db_fp)
+            db.commit()
+            db.refresh(db_fp)
+            footprints.append(db_fp)
+
+    return PathResponse(
+        id=db_path.id,
+        user_id=db_path.user_id,
+        name=db_path.name,
+        color=db_path.color,
+        is_active=db_path.is_active,
+        is_completed=db_path.is_completed,
+        created_at=db_path.created_at.strftime("%Y-%m-%dT%H:%M:%S"),
+        footprints=[FootprintResponse(
+            id=fp.id,
+            user_id=fp.user_id,
+            action=fp.action,
+            path_name=fp.path_name,
+            path_color=fp.path_color,
+            due_time=fp.due_time.strftime("%Y-%m-%d"),
+            is_completed=bool(fp.is_completed),
+            priority=fp.priority
+        ) for fp in footprints]
+    )
+
+@app.get("/paths/{user_id}", response_model=List[PathResponse])
+def get_user_paths(user_id: int, db: Session = Depends(get_db)):
+    """Get paths for a specific user"""
+    paths = db.query(PathModel).filter(PathModel.user_id == user_id).all()
+    return [
+        PathResponse(
+            id=p.id,
+            user_id=p.user_id,
+            name=p.name,
+            color=p.color,
+            is_active=p.is_active,
+            is_completed=p.is_completed,
+            created_at=p.created_at.strftime("%Y-%m-%dT%H:%M:%S"),
+            footprints=[FootprintResponse(
+                id=fp.id,
+                user_id=fp.user_id,
+                action=fp.action,
+                path_name=fp.path_name,
+                path_color=fp.path_color,
+                due_time=fp.due_time.strftime("%Y-%m-%d"),
+                is_completed=bool(fp.is_completed),
+                priority=fp.priority
+            ) for fp in p.footprints]
+        ) for p in paths
+    ]
+
 @app.get("/health")
 def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "message": "Omeyo AI Agent is running!"}
+
+@app.post("/generate-image")
+async def generate_image_endpoint(request_data: ImageGenerationRequest, token: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Generates an image based on the provided prompt using Imagen.
+    """
+    try:
+        # Optional: Verify token if image generation should be restricted to authenticated users
+        if token:
+            payload = verify_token(token)
+            if not payload or not payload.get("sub"):
+                raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+        image_output = await generate_image_with_imagen(request_data.prompt)
+
+        if image_output.startswith("Error:"):
+            raise HTTPException(status_code=500, detail=image_output)
+
+        # Return as {"imageUrl": ...} for frontend compatibility
+        return {"imageUrl": image_output}
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        print(f"Error in generate-image endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

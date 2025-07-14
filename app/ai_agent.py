@@ -60,3 +60,90 @@ async def call_gemini_api(full_prompt: str) -> str:
         print(f"Error calling Gemini API: {e}")
         # In a FastAPI app, you might raise an HTTPException here.
         return f"Error communicating with AI service: {str(e)}"
+
+async def generate_image_with_imagen(prompt: str) -> str:
+    """
+    Generates an image using Imagen REST API based on the provided prompt.
+    Returns the URL of the generated image or an error message.
+    """
+    try:
+        # Check if Google Cloud credentials are available
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            print("Google Cloud credentials not found. Using placeholder image for development.")
+            # Return a simple base64 encoded placeholder image
+            import base64
+            # Simple 1x1 pixel PNG image with blue background
+            placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+            return f"data:image/png;base64,{placeholder_base64}"
+        
+        import requests
+        import json
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        
+        # Get project ID
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID", "gen-lang-client-0204395031")
+        
+        # Load service account credentials and get access token
+        try:
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+            credentials.refresh(Request())
+            access_token = credentials.token
+        except Exception as e:
+            print(f"Error getting access token: {e}")
+            # Return a simple base64 encoded placeholder image
+            import base64
+            # Simple 1x1 pixel PNG image with blue background
+            placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+            return f"data:image/png;base64,{placeholder_base64}"
+        
+        # Prepare the request
+        url = f"https://us-central1-aiplatform.googleapis.com/v1/projects/{project_id}/locations/us-central1/publishers/google/models/imagen-4.0-generate-preview-06-06:predict"
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json; charset=utf-8"
+        }
+        
+        data = {
+            "instances": [
+                {
+                    "prompt": f"{prompt}, photorealistic, no text, forward-looking view"
+                }
+            ],
+            "parameters": {
+                "sampleCount": 1
+            }
+        }
+        
+        # Make the request
+        print(f"🖼️ Generating image with prompt: {prompt}")
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if "predictions" in result and len(result["predictions"]) > 0:
+                # Get the base64 encoded image
+                image_data = result["predictions"][0]["bytesBase64Encoded"]
+                return f"data:image/png;base64,{image_data}"
+            else:
+                print("No predictions in response")
+                return "Error: No images were generated."
+        else:
+            print(f"Error: {response.status_code} - {response.text}")
+            return f"Error: {response.status_code} - {response.text}"
+            
+    except ImportError as e:
+        print(f"Error: Required libraries not installed: {e}")
+        return "Error: Image generation library not installed."
+    except Exception as e:
+        print(f"Error generating image with Imagen: {e}")
+        # Fallback to placeholder image
+        import base64
+        # Simple 1x1 pixel PNG image with blue background
+        placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        return f"data:image/png;base64,{placeholder_base64}"
