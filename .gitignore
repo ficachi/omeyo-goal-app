@@ -62,4 +62,5 @@ logs/
 
 # Google Cloud Service Account Keys
 service-account-key.json
+gen-lang-client-*.json
 *.json 
