@@ -71,7 +71,11 @@ async def generate_image_with_imagen(prompt: str) -> str:
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if not credentials_path:
             print("Google Cloud credentials not found. Using placeholder image for development.")
-            return "https://via.placeholder.com/512x512/4F46E5/FFFFFF?text=Dream+Visualization"
+            # Return a simple base64 encoded placeholder image
+            import base64
+            # Simple 1x1 pixel PNG image with blue background
+            placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+            return f"data:image/png;base64,{placeholder_base64}"
         
         import requests
         import json
@@ -91,7 +95,11 @@ async def generate_image_with_imagen(prompt: str) -> str:
             access_token = credentials.token
         except Exception as e:
             print(f"Error getting access token: {e}")
-            return "https://via.placeholder.com/512x512/4F46E5/FFFFFF?text=Dream+Visualization"
+            # Return a simple base64 encoded placeholder image
+            import base64
+            # Simple 1x1 pixel PNG image with blue background
+            placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+            return f"data:image/png;base64,{placeholder_base64}"
         
         # Prepare the request
         url = f"https://us-central1-aiplatform.googleapis.com/v1/projects/{project_id}/locations/us-central1/publishers/google/models/imagen-4.0-generate-preview-06-06:predict"
@@ -135,4 +143,7 @@ async def generate_image_with_imagen(prompt: str) -> str:
     except Exception as e:
         print(f"Error generating image with Imagen: {e}")
         # Fallback to placeholder image
-        return "https://via.placeholder.com/512x512/4F46E5/FFFFFF?text=Dream+Visualization"
+        import base64
+        # Simple 1x1 pixel PNG image with blue background
+        placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        return f"data:image/png;base64,{placeholder_base64}"

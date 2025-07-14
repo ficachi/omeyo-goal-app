@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Date
+from sqlalchemy import Column, Integer, String, ForeignKey, Date, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from datetime import datetime
 from .database import engine
 
 Base = declarative_base()
@@ -17,6 +18,19 @@ class User(Base):
     totem_title = Column(String)
     ocean_scores = Column(String)  # JSON string of personality scores
     goals = relationship("Goal", back_populates="user")
+    paths = relationship("Path", back_populates="user")
+
+class Path(Base):
+    __tablename__ = "paths"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    name = Column(String, index=True)
+    color = Column(String, default="bg-purple-100 text-purple-800")
+    is_active = Column(Boolean, default=True)
+    is_completed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="paths")
+    footprints = relationship("Footprint", back_populates="path")
 
 class Goal(Base):
     __tablename__ = "goals"
@@ -30,6 +44,7 @@ class Footprint(Base):
     __tablename__ = "footprints"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    path_id = Column(Integer, ForeignKey("paths.id"), nullable=True)
     action = Column(String)
     path_name = Column(String)
     path_color = Column(String)
@@ -37,6 +52,7 @@ class Footprint(Base):
     is_completed = Column(Integer, default=0)  # 0 = False, 1 = True
     priority = Column(Integer)
     user = relationship("User", backref="footprints")
+    path = relationship("Path", back_populates="footprints")
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
