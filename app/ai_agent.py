@@ -1,4 +1,5 @@
 import os
+import base64
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -67,12 +68,11 @@ async def generate_image_with_imagen(prompt: str) -> str:
     Returns the URL of the generated image or an error message.
     """
     try:
-        # Check if Google Cloud credentials are available
-        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if not credentials_path:
+        # Check if Google Cloud credentials are available from environment variable
+        encoded_credentials = os.getenv("GOOGLE_CLOUD_CREDENTIALS")
+        if not encoded_credentials:
             print("Google Cloud credentials not found. Using placeholder image for development.")
             # Return a simple base64 encoded placeholder image
-            import base64
             # Simple 1x1 pixel PNG image with blue background
             placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
             return f"data:image/png;base64,{placeholder_base64}"
@@ -85,10 +85,17 @@ async def generate_image_with_imagen(prompt: str) -> str:
         # Get project ID
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID", "gen-lang-client-0204395031")
         
-        # Load service account credentials and get access token
+        # Decode the base64 credentials and load service account credentials
         try:
-            credentials = service_account.Credentials.from_service_account_file(
-                credentials_path,
+            # Decode the base64 string
+            decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
+            
+            # Parse the JSON
+            credentials_dict = json.loads(decoded_credentials)
+            
+            # Create credentials from dictionary
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_dict,
                 scopes=['https://www.googleapis.com/auth/cloud-platform']
             )
             credentials.refresh(Request())
@@ -96,7 +103,6 @@ async def generate_image_with_imagen(prompt: str) -> str:
         except Exception as e:
             print(f"Error getting access token: {e}")
             # Return a simple base64 encoded placeholder image
-            import base64
             # Simple 1x1 pixel PNG image with blue background
             placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
             return f"data:image/png;base64,{placeholder_base64}"
@@ -143,7 +149,6 @@ async def generate_image_with_imagen(prompt: str) -> str:
     except Exception as e:
         print(f"Error generating image with Imagen: {e}")
         # Fallback to placeholder image
-        import base64
         # Simple 1x1 pixel PNG image with blue background
         placeholder_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         return f"data:image/png;base64,{placeholder_base64}"
