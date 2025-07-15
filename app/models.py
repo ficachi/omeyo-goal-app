@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Date, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, Date, Boolean, DateTime, Text, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -19,6 +19,19 @@ class User(Base):
     ocean_scores = Column(String)  # JSON string of personality scores
     goals = relationship("Goal", back_populates="user")
     paths = relationship("Path", back_populates="user")
+    conversations = relationship("Conversation", back_populates="user")
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    title = Column(String, default="New Conversation")
+    personality = Column(String, default="coach")
+    messages = Column(JSON)  # Store messages as JSON array
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user = relationship("User", back_populates="conversations")
 
 class Path(Base):
     __tablename__ = "paths"

@@ -80,15 +80,27 @@ def get_personalized_coach_prompt(ocean_scores: Dict[str, Any], totem_profile: D
             "Be supportive and adaptive—if their personality is more reserved, gentle, or cautious, match that tone. "
             "If their personality is more energetic or optimistic, encourage them in a way that feels natural for them. "
             "Do not mimic or reference the animal symbol; focus on the human personality and how best to help them grow. "
-            "\n\nThe idea of the AI is to constantly analyze the user's responses to see if it can generate actions, activatables, or areas for personal improvement, in order to create a plan that is divided into simple steps. "
-            "If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n"
+            "\n\nConstantly analyze the user's responses to identify opportunities for them to take action, make improvements, or work on personal growth. "
+            "When you identify specific steps the user can take to make progress, first present the potential action items as bullet points and ask the user if they want to add them as footprints. "
+            "Only output footprints as JSON after the user confirms with 'yes'. Example:\n\n"
+            "Here are some action items you could work on:\n"
+            "• Drink a glass of water\n"
+            "• Meditate for 5 minutes\n\n"
+            "Would you like me to add these as footprints for you? (yes/no)\n\n"
+            "If user says 'yes', then output:\n"
             "[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]"
         )
     else:
         totem_context = (
             f"{base_prompt}\n\nYou are an AI companion. Be supportive, positive, and help the user grow. "
-            "Constantly analyze the user's responses to generate actions, activatables, or areas for personal improvement, and create a plan divided into simple steps. "
-            "If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n"
+            "Constantly analyze the user's responses to identify opportunities for them to take action, make improvements, or work on personal growth. "
+            "When you identify specific steps the user can take to make progress, first present the potential action items as bullet points and ask the user if they want to add them as footprints. "
+            "Only output footprints as JSON after the user confirms with 'yes'. Example:\n\n"
+            "Here are some action items you could work on:\n"
+            "• Drink a glass of water\n"
+            "• Meditate for 5 minutes\n\n"
+            "Would you like me to add these as footprints for you? (yes/no)\n\n"
+            "If user says 'yes', then output:\n"
             "[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]"
         )
     return totem_context

@@ -93,13 +93,22 @@ async def generate_image_with_imagen(prompt: str) -> str:
             # Parse the JSON
             credentials_dict = json.loads(decoded_credentials)
             
-            # Create credentials from dictionary
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_dict,
+            # Create a temporary file for the credentials
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.json', delete=False) as temp_file:
+                temp_file.write(decoded_credentials.encode('utf-8'))
+                temp_file_path = temp_file.name
+            
+            # Create credentials from file
+            credentials = service_account.Credentials.from_service_account_file(
+                temp_file_path,
                 scopes=['https://www.googleapis.com/auth/cloud-platform']
             )
             credentials.refresh(Request())
             access_token = credentials.token
+            
+            # Clean up the temporary file
+            os.unlink(temp_file_path)
         except Exception as e:
             print(f"Error getting access token: {e}")
             # Return a simple base64 encoded placeholder image

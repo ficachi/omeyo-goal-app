@@ -3,18 +3,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
 from sqlalchemy.exc import NoResultFound
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from .ai_agent import call_gemini_api, generate_image_with_imagen
 from .database import SessionLocal, engine
-from .models import Base, User, Goal, Footprint, Path as PathModel
+from .models import Base, User, Goal, Footprint, Path as PathModel, Conversation
 from .auth import authenticate_user, create_user, create_access_token, verify_token
 from .utils import get_personalized_coach_prompt
+from .schemas import ConversationListResponse, ConversationResponse
 import json
 # from .supabase_config import get_supabase_client
 
@@ -47,9 +48,16 @@ app.add_middleware(
 class ChatMessage(BaseModel):
     message: str
     personality: str = "coach"
+    conversation_id: Optional[int] = None  # If provided, continue existing conversation
+    conversation_history: Optional[List[Dict[str, str]]] = None  # Current conversation from frontend
 
 class ImageGenerationRequest(BaseModel):
     prompt: str
+
+class CompleteConversationRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    personality: str
+    title: str
 
 class UserCreate(BaseModel):
     name: str
@@ -85,6 +93,7 @@ class FootprintCreate(BaseModel):
     action: str
     path_name: str
     path_color: str
+    path_id: Optional[int] = None  # Optional path_id for linking to specific path
     due_time: str
     is_completed: bool = False
     priority: int
@@ -144,12 +153,14 @@ async def test_supabase():
 
 @app.post("/chat")
 async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, db: Session = Depends(get_db)):
-    """Chat with the AI agent"""
+    """Chat with the AI agent with conversation history support"""
     try:
         # Get user data if token is provided
         user = None
         ocean_scores = None
         totem_profile = None
+        conversation = None
+        conversation_id = None
         
         if token:
             payload = verify_token(token)
@@ -172,6 +183,9 @@ async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, d
                     }
                     # Remove keys with None values
                     totem_profile = {k: v for k, v in totem_profile.items() if v is not None}
+                    
+                    # Note: We no longer create or manage conversations during individual messages
+                    # The frontend will handle conversation management and save complete conversations
         
         # Use personalized coach prompt if user data is available, otherwise fall back to manual selection
         if ocean_scores:
@@ -180,18 +194,30 @@ async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, d
         else:
             # Fallback to manual personality selection
             personality_prompts = {
-                "coach": "You are a motivational coach. Be encouraging, goal-oriented, and help users stay focused on their objectives. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
-                "mentor": "You are a wise mentor. Provide thoughtful guidance, share insights, and help users think through their challenges. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
-                "friend": "You are a supportive friend. Be warm, understanding, and provide emotional support while being encouraging. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
-                "therapist": "You are an empathetic therapist. Listen carefully, validate feelings, and provide therapeutic insights and coping strategies. If you suggest any actionable steps, output them as a JSON array at the end of your response, wrapped in [FOOTPRINTS] and [/FOOTPRINTS] tags, like this:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]"
+                "coach": "You are a motivational coach. Be encouraging, goal-oriented, and help users stay focused on their objectives. When you identify opportunities for the user to take action or make progress on their goals, first present the potential action items as bullet points and ask the user if they want to add them as footprints. Only output footprints as JSON after the user confirms with 'yes'. Example:\n\nHere are some action items you could work on:\n• Drink a glass of water\n• Meditate for 5 minutes\n\nWould you like me to add these as footprints for you? (yes/no)\n\nIf user says 'yes', then output:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
+                "mentor": "You are a wise mentor. Provide thoughtful guidance, share insights, and help users think through their challenges. When you identify specific steps the user can take to improve or make progress, first present the potential action items as bullet points and ask the user if they want to add them as footprints. Only output footprints as JSON after the user confirms with 'yes'. Example:\n\nHere are some action items you could work on:\n• Drink a glass of water\n• Meditate for 5 minutes\n\nWould you like me to add these as footprints for you? (yes/no)\n\nIf user says 'yes', then output:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
+                "friend": "You are a supportive friend. Be warm, understanding, and provide emotional support while being encouraging. When you see opportunities for the user to take positive steps or make small improvements, first present the potential action items as bullet points and ask the user if they want to add them as footprints. Only output footprints as JSON after the user confirms with 'yes'. Example:\n\nHere are some action items you could work on:\n• Drink a glass of water\n• Meditate for 5 minutes\n\nWould you like me to add these as footprints for you? (yes/no)\n\nIf user says 'yes', then output:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]",
+                "therapist": "You are an empathetic therapist. Listen carefully, validate feelings, and provide therapeutic insights and coping strategies. When you identify healthy coping mechanisms or positive steps the user can take, first present the potential action items as bullet points and ask the user if they want to add them as footprints. Only output footprints as JSON after the user confirms with 'yes'. Example:\n\nHere are some action items you could work on:\n• Drink a glass of water\n• Meditate for 5 minutes\n\nWould you like me to add these as footprints for you? (yes/no)\n\nIf user says 'yes', then output:\n[FOOTPRINTS]\n[\n  {\"action\": \"Drink a glass of water\", \"due_time\": \"Today\"},\n  {\"action\": \"Meditate for 5 minutes\", \"due_time\": \"Tomorrow\"}\n]\n[/FOOTPRINTS]"
             }
             personality_instruction = personality_prompts.get(chat_data.personality, personality_prompts["coach"])
             print("=== DEBUG: Using fallback prompt ===")
         
+        # Build conversation context from frontend-provided history
+        conversation_context = ""
+        if chat_data.conversation_history and len(chat_data.conversation_history) > 0:
+            # Get the last 10 messages for context (to avoid token limits)
+            recent_messages = chat_data.conversation_history[-10:]
+            conversation_context = "\n\nThis is the conversation we are having right now:\n"
+            for msg in recent_messages:
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')
+                conversation_context += f"{role.capitalize()}: {content}\n"
+            conversation_context += "\nPlease continue this conversation naturally, maintaining context and building upon what we've discussed."
+        
         print(f"Personality instruction length: {len(personality_instruction)}")
         print(f"Contains [FOOTPRINTS]: {personality_instruction.find('[FOOTPRINTS]') != -1}")
         
-        full_prompt = f"{personality_instruction}\n\nUser: {chat_data.message}\n\nResponse:"
+        full_prompt = f"{personality_instruction}{conversation_context}\n\nUser: {chat_data.message}\n\nResponse:"
         
         print("=" * 50)
         print("🔍 DEBUG: CHAT REQUEST")
@@ -200,6 +226,15 @@ async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, d
         print(f"🎭 Received personality: '{chat_data.personality}'")
         print(f"👤 User authenticated: {user is not None}")
         print(f"🧠 User has ocean scores: {ocean_scores is not None}")
+        print(f"💬 Conversation ID: {conversation_id}")
+        print(f"📚 Conversation context length: {len(conversation_context)}")
+        print(f"📚 Conversation history messages: {len(chat_data.conversation_history) if chat_data.conversation_history else 0}")
+        
+        # Check if this message includes last conversation context
+        if "A user is about to start a conversation with you" in chat_data.message:
+            print("🔄 DETECTED: Last conversation context included in message")
+            print("📖 This appears to be the first message with previous conversation context")
+        
         if user:
             print(f"🐾 User totem: {user.totem_title}")
             print(f"🐾 User totem animal: {user.totem_animal}")
@@ -216,6 +251,10 @@ async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, d
         print("=== DEBUG: AI RESPONSE ===")
         print(f"AI Response: {response}")
         print("=== END DEBUG ===")
+
+        # Note: We no longer save individual messages to the database here
+        # The frontend will accumulate messages and save the complete conversation
+        # when the user leaves the chat
 
         # Extract footprints from AI response
         footprints = []
@@ -235,7 +274,6 @@ async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, d
                         user_id = user.id
                         
                         # Convert due_time strings to proper date format
-                        from datetime import datetime, timedelta
                         
                         for fp_data in footprints_data:
                             try:
@@ -290,11 +328,69 @@ async def chat_with_agent(chat_data: ChatMessage, token: Optional[str] = None, d
         return {
             "response": response,
             "personality": chat_data.personality,
-            "conversation": [{"role": "user", "content": chat_data.message}, {"role": "assistant", "content": response}],
             "footprints": footprints
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Agent error: {str(e)}")
+
+@app.post("/conversations/save-complete")
+async def save_complete_conversation(
+    conversation_data: CompleteConversationRequest, 
+    token: Optional[str] = None, 
+    db: Session = Depends(get_db)
+):
+    """Save a complete conversation with all messages in JSONB format"""
+    try:
+        print(f"🔐 Token verification for save-complete endpoint")
+        print(f"🔐 Token provided: {bool(token)}")
+        
+        if not token:
+            raise HTTPException(status_code=401, detail="Token required")
+        
+        # Verify user
+        payload = verify_token(token)
+        print(f"🔐 Token payload: {payload}")
+        
+        if not payload or not payload.get("sub"):
+            print(f"🔐 Token verification failed: {payload}")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        
+        user = db.query(User).filter(User.email == payload["sub"]).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Extract conversation data
+        messages = conversation_data.messages
+        personality = conversation_data.personality
+        title = conversation_data.title
+        
+        # Create new conversation with all messages
+        conversation = Conversation(
+            user_id=user.id,
+            title=title,
+            personality=personality,
+            messages=messages,  # This will be stored as JSONB
+            is_active=True
+        )
+        
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        
+        print(f"✅ Saved complete conversation with {len(messages)} messages")
+        print(f"📝 Conversation ID: {conversation.id}")
+        print(f"👤 User ID: {user.id}")
+        print(f"📊 Messages count: {len(messages)}")
+        
+        return {
+            "success": True,
+            "conversation_id": conversation.id,
+            "message_count": len(messages)
+        }
+        
+    except Exception as e:
+        print(f"❌ Error saving complete conversation: {e}")
+        raise HTTPException(status_code=500, detail=f"Error saving conversation: {str(e)}")
 
 @app.post("/auth/register", response_model=dict)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
@@ -375,6 +471,24 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
         "access_token": access_token,
         "token_type": "bearer"
     }
+
+@app.post("/auth/refresh")
+def refresh_token(token: str, db: Session = Depends(get_db)):
+    """Refresh the access token"""
+    try:
+        payload = verify_token(token)
+        if not payload or not payload.get("sub"):
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Create new token
+        new_token = create_access_token(data={"sub": payload["sub"]})
+        
+        return {
+            "access_token": new_token,
+            "token_type": "bearer"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Token refresh failed")
 
 @app.get("/auth/me", response_model=UserResponse)
 def get_current_user(token: str, db: Session = Depends(get_db)):
@@ -466,7 +580,6 @@ def create_footprint(footprint: FootprintCreate, db: Session = Depends(get_db)):
     print(f"Footprint dict: {footprint.dict()}")
     
     # Convert string date to date object for database
-    from datetime import datetime
     try:
         due_date = datetime.strptime(footprint.due_time, "%Y-%m-%d").date()
     except ValueError:
@@ -478,6 +591,7 @@ def create_footprint(footprint: FootprintCreate, db: Session = Depends(get_db)):
         action=footprint.action,
         path_name=footprint.path_name,
         path_color=footprint.path_color,
+        path_id=footprint.path_id,  # Use the provided path_id
         due_time=due_date,
         is_completed=1 if footprint.is_completed else 0,
         priority=footprint.priority
@@ -607,7 +721,6 @@ Make sure the steps are tailored to their specific dream and will create a clear
                 db.refresh(db_path)
                 
                 # Convert due_time strings to proper date format
-                from datetime import timedelta
                 
                 for i, fp_data in enumerate(footprints_data):
                     try:
@@ -688,6 +801,11 @@ def create_path(path: PathCreate, db: Session = Depends(get_db)):
     """Create a new path and (optionally) its footprints."""
     from .models import Path as PathModel, Footprint as FootprintModel
     from datetime import datetime
+    
+    print(f"🔍 DEBUG: Creating path for user {path.user_id}")
+    print(f"🔍 DEBUG: Path name: {path.name}")
+    print(f"🔍 DEBUG: Path color: {path.color}")
+    
     db_path = PathModel(
         user_id=path.user_id,
         name=path.name,
@@ -699,6 +817,8 @@ def create_path(path: PathCreate, db: Session = Depends(get_db)):
     db.add(db_path)
     db.commit()
     db.refresh(db_path)
+    
+    print(f"🔍 DEBUG: Created path with ID: {db_path.id}")
 
     footprints = []
     if path.footprints:
@@ -746,7 +866,12 @@ def create_path(path: PathCreate, db: Session = Depends(get_db)):
 @app.get("/paths/{user_id}", response_model=List[PathResponse])
 def get_user_paths(user_id: int, db: Session = Depends(get_db)):
     """Get paths for a specific user"""
+    print(f"🔍 DEBUG: Getting paths for user {user_id}")
     paths = db.query(PathModel).filter(PathModel.user_id == user_id).all()
+    print(f"🔍 DEBUG: Found {len(paths)} paths for user {user_id}")
+    for path in paths:
+        print(f"🔍 DEBUG: Path ID: {path.id}, Name: {path.name}, Footprints: {len(path.footprints)}")
+    
     return [
         PathResponse(
             id=p.id,
@@ -799,6 +924,142 @@ async def generate_image_endpoint(request_data: ImageGenerationRequest, token: O
     except Exception as e:
         print(f"Error in generate-image endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
+
+# Conversation Management Endpoints
+@app.get("/conversations/{user_id}", response_model=List[ConversationListResponse])
+def get_user_conversations(user_id: int, db: Session = Depends(get_db)):
+    """Get all conversations for a user"""
+    conversations = db.query(Conversation).filter(Conversation.user_id == user_id).order_by(Conversation.updated_at.desc()).all()
+    
+    result = []
+    for conv in conversations:
+        message_count = len(conv.messages) if conv.messages else 0
+        result.append(ConversationListResponse(
+            id=conv.id,
+            title=conv.title,
+            personality=conv.personality,
+            is_active=conv.is_active,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+            message_count=message_count
+        ))
+    
+    return result
+
+@app.get("/conversations/{user_id}/last", response_model=ConversationResponse)
+def get_last_conversation_with_messages(user_id: int, db: Session = Depends(get_db)):
+    """Get the last conversation with messages for a user"""
+    conversation = db.query(Conversation).filter(Conversation.user_id == user_id).order_by(Conversation.updated_at.desc()).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="No conversations found for this user")
+    
+    return ConversationResponse(
+        id=conversation.id,
+        user_id=conversation.user_id,
+        title=conversation.title,
+        personality=conversation.personality,
+        is_active=conversation.is_active,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=conversation.messages if conversation.messages else []
+    )
+
+@app.get("/conversations/{conversation_id}/messages", response_model=ConversationResponse)
+def get_conversation_messages(conversation_id: int, db: Session = Depends(get_db)):
+    """Get all messages for a specific conversation"""
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    return ConversationResponse(
+        id=conversation.id,
+        user_id=conversation.user_id,
+        title=conversation.title,
+        personality=conversation.personality,
+        is_active=conversation.is_active,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=conversation.messages if conversation.messages else []
+    )
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int, db: Session = Depends(get_db)):
+    """Delete a conversation and all its messages"""
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    # Delete the conversation (messages are stored as JSON, so no separate deletion needed)
+    db.delete(conversation)
+    db.commit()
+    
+    return {"message": "Conversation deleted successfully"}
+
+@app.patch("/conversations/{conversation_id}/title")
+def update_conversation_title(conversation_id: int, title: str, db: Session = Depends(get_db)):
+    """Update the title of a conversation"""
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    conversation.title = title
+    db.commit()
+    db.refresh(conversation)
+    
+    return {"message": "Conversation title updated successfully", "title": title}
+
+# New endpoint for saving conversations in the requested format
+class ConversationSaveRequest(BaseModel):
+    user_id: int
+    conversation_text: str
+    timestamp: str
+    personality: Optional[str] = None
+
+@app.post("/conversations/save")
+def save_conversation_text(conversation: ConversationSaveRequest, db: Session = Depends(get_db)):
+    """Save a conversation in the requested format (user: message, model: response)"""
+    try:
+        # Parse the conversation text and create message array
+        lines = conversation.conversation_text.strip().split('\n')
+        messages = []
+        
+        for line in lines:
+            if line.strip():
+                # Parse lines in format "user: message" or "model: response"
+                if ': ' in line:
+                    role, content = line.split(': ', 1)
+                    if role.lower() in ['user', 'model']:
+                        messages.append({
+                            "role": role.lower(),
+                            "content": content.strip(),
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+        
+        # Create a new conversation record with JSON array
+        db_conversation = Conversation(
+            user_id=conversation.user_id,
+            title="Saved Conversation",
+            personality=conversation.personality or "coach",
+            messages=messages,
+            is_active=False  # Mark as completed
+        )
+        db.add(db_conversation)
+        db.commit()
+        db.refresh(db_conversation)
+        
+        return {
+            "id": db_conversation.id,
+            "user_id": db_conversation.user_id,
+            "conversation_text": conversation.conversation_text,
+            "timestamp": conversation.timestamp,
+            "personality": conversation.personality,
+            "message_count": len(messages)
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save conversation: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
